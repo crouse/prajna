@@ -1,0 +1,3 @@
+# Just begin...
+
+Everything is just in mind, so there is nothing to tell.
