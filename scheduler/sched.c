@@ -46,9 +46,9 @@ struct option long_options[] = {
 
 int main(int argc, char *argv[])
 {
+    memset(&gconf, '\0', sizeof(gconf_t));
     /*[s] set default database name */
     char* default_dbname = "prajna";
-    memset(gconf.dbname, '\0', COMMON_NAME_LEN);
     memcpy(gconf.dbname, default_dbname, COMMON_NAME_LEN);
     /*[e] set default database name */
 
@@ -61,15 +61,12 @@ int main(int argc, char *argv[])
     {
         switch (c) {
             case 'h':
-                memset(gconf.hostname, '\0', HOST_LEN);
                 memcpy(gconf.hostname, optarg, strlen(optarg));
                 break;
             case 'u': 
-                memset(gconf.username, '\0', COMMON_NAME_LEN);
                 memcpy(gconf.username, optarg, strlen(optarg));
                 break;
             case 'p':
-                memset(gconf.password, '\0', PASS_LEN);
                 memcpy(gconf.password, optarg, strlen(optarg));
                 break;
             case 'i':
