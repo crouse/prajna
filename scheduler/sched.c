@@ -19,6 +19,8 @@
 void help();
 int init_db_connections();
 int create_tables();
+void init_threads();
+void hide_arg(int argc, char** argv, const char* arg);
 
 char *appname = NULL;
 typedef struct {
@@ -82,8 +84,19 @@ int main(int argc, char *argv[])
         }
     }
 
+    hide_arg(argc, argv, "--password");
+    hide_arg(argc, argv, "-p");
+    daemon(0, 0);
+
     init_db_connections();
     if (initdb == TRUE) create_tables();
+
+    init_threads();
+
+    while(TRUE) {
+        sleep(5);
+    }
+
     return 0;
 }
 
@@ -222,4 +235,23 @@ MY_ERROR:
     fprintf(stderr, "[%d] %s\n", ERROR_QUERY_MYSQL, mysql_error(gconf.con[0]));
     mysql_close(gconf.con[0]);
     return ERROR_QUERY_MYSQL;
+}
+
+void init_threads()
+{
+}
+
+void hide_arg(int argc, char** argv, const char* arg)
+{
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], arg) || i == (argc - 1)) 
+            continue;
+        i++;
+        int j = strlen(argv[i]);
+        for (j = j - 1; j >= 0; j--)
+        {
+            argv[i][j] = 'x';
+        }
+    }
 }
