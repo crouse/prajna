@@ -8,8 +8,7 @@ from comm import status_code
 from mydb import MySQL
 
 class DependingTest(object):
-    def __init__(self, sched_status__id, dbhandle):
-        self.sched_status__id = sched_status__id
+    def __init__(self, dbhandle):
         self.dbhandle = dbhandle
 
     def get_crontab_by__sched_id(self, sched_id):
@@ -69,7 +68,7 @@ class DependingTest(object):
         failed__job_list = [x for x in result if x['status'] != status_code['success']]
         return False, failed__job_list 
 
-    def test_all_depends(self):
+    def test_all_depends(self, sched_status__id):
         status__list = []
         sql = '''
         	SELECT 
@@ -81,7 +80,7 @@ class DependingTest(object):
             `status`
             FROM `prajna`.`sched_status`
             WHERE `id` = '{0}'
-        '''.format(self.sched_status__id)
+        '''.format(sched_status__id)
         ret = self.dbhandle.select(sql)
         if ret[0] == False: return ret
         result = ret[1][0]
@@ -104,6 +103,6 @@ class DependingTest(object):
             print json.dumps(status__list)
             return False, status__list 
 
-my = MySQL('localhost', 'root', '123456', 'prajna', 3306)
-d = DependingTest(11, my)
-d.test_all_depends()
+#my = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+#d = DependingTest(my)
+#d.test_all_depends(11)

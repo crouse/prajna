@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import timedelta
 from croniter import croniter
 from mydb import MySQL
+from depending import DependingTest
 from comm import status_code
 
 import logging
@@ -23,91 +24,115 @@ logger.setLevel(logging.DEBUG)
 
 
 class Producer(threading.Thread):
-    def __init__(self, threadName):
+    def __init__(self, threadName, dbhandler):
         threading.Thread.__init__(self, name = threadName)
+        self.mydb = dbhandler
+    def update__sched_status(self, sched_id, gen_dt):
+        sql = """SELECT `id`, `status` FROM `sched_status` WHERE `sched_id` = '{0}' AND `gen_dt` = '{1}'
+        """.format(sched_id, gen_dt)
+        ret = self.mydb.select(sql)
+        if not ret[0]: return ret
+        if len(ret[1]) == 0: 
+            insert_sql = """
+                INSERT INTO `sched_status` (
+                `sched_id`,
+                `depends`,
+                `hostname`,
+                `user_os`,
+                `env`,
+                `sched_type`,
+                `crontab`,
+                `priority`,
+                `cmdline`,
+                `appname`,
+                `appparas`,
+                `dbname`,
+                `timeout`,
+                `gen_dt`
+                ) SELECT
+                `sched_id`,
+                `depends`,
+                `hostname`,
+                `user_os`,
+                `env`,
+                `sched_type`,
+                `crontab`,
+                `priority`,
+                `cmdline`,
+                `appname`,
+                `appparas`,
+                `dbname`,
+                `timeout`,
+                DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:00') AS `gen_dt`
+                FROM `sched_formal`
+                WHERE `sched_id` = '{0}' 
+            """.format(sched_id)
+            return self.mydb.query(insert_sql)
+
+        sched_status__id = ret[1][0]['id']
+        sched_status__status = ret[1][0]['status']
+        logger.debug("status_id: %d" % sched_status__id)
+        if sched_status__status != 0: 
+            logger.debug('already updated')
+            return True, 'already update'
+
+        update_sql = """UPDATE `sched_status` SET `status` = '{0}' WHERE `id` = '{1}'
+        """.format(status_code['exec'], sched_status__id)
+
+        return self.mydb.query(update_sql)
+
     def produce(self):
-        my = MySQL('localhost', 'root', '123456', 'prajna', 3306)
         while True:
             s = time.time()
-            result = my.select('''select * from sched_formal''')
-            if not result: continue
-            for x in result: 
+            ret = self.mydb.select('''select * from sched_formal''')
+            if not ret[0]: continue
+            results = ret[1]
+            for x in results: 
                 now = datetime.now().replace(second=0, microsecond=0)
-                iter = croniter(x['crontab'], now - timedelta(minutes=1))
-                iter_next = iter.get_next(datetime)
+                iters = croniter(x['crontab'], now - timedelta(minutes=1))
+                iter_next = iters.get_next(datetime)
                 if iter_next == now:
-                    print x['crontab'], now
+                    self.update__sched_status(x['sched_id'], now)
+                    logger.debug("sched_id: %d, crontab: %s, depends: %s, now: %s" % (x['sched_id'], x['crontab'], x['depends'], str(now)))
             e = time.time()
-            stime = (60 - (e - s))
+            stime = (60 - (e - s + 1.0))
             time.sleep(stime)
 
     def run(self):
         self.produce()
 
-class Depend(threading.Thread):
-    def __init__(self, threadName):
+class Depender(threading.Thread):
+    def __init__(self, threadName, dbhandler):
         threading.Thread.__init__(self, name = threadName)
-        self.my = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+        self.mydb = dbhandler
         self.status = {'scheduling': 0, 'exec': 1, 'runing': 2, 'success': 3, 'failed': 4, 'timeout': 5}
+        self.depending__test = DependingTest(self.mydb)
+
     def update_status(self, s_id, status):
         sql = "update sched_status set status = '{0}' where id = '{1}".format(status, s_id)
-        return self.my(sql)
-
-    def get_single_dep_dtlist_dict(self, single_json_dep_dict, basetime):
-        '''
-        single_json_dep_dict: { "sched_id": 1, "starttime": "timedelta(hours=-3)", "endtime": "timedelta(hours=5)"}
-        basetime: query from sched_status, == gen_dt: select gen_dt from sched_status where id = ??
-        single_dep_dtlist: {"sched_id": 2, "datetime_list": [ datetime(2015,4,22,10,30), datetime(2015,4,22,10,35) ...]}"
-        '''
-        single_dep_dtlist = []
-        starttime = basetime + eval(single_json_dep_dict['starttime']) 
-        endtime = basetime + eval(single_json_dep_dict['endtime'])
-
-        '''starttime == endtime tells there is only one time depends '''
-        if starttime == endtime: 
-            return {'sched_id': single_json_dep_dict['sched_id'], 'dep_datetimelist': [starttime]}
-
-        starttime = starttime - timedelta(minutes=1)
-        record = my.select(""" select * from sched_status where sched_id = '{0}' """)[0]
-        iters = croniter(record['crontab'], starttime)
-
-        next_dt = iters.get_next(datetime)
-        while next_dt <= endtime:
-            single_dep_dtlist.append(next_dt)
-
-        if single_dep_dtlist:
-            return {'sched_id': single_json_dep_dict['sched_id'], 'dep_datetimelist': single_dep_dtlist}
-
-        return None
-
-    def get_single_dep_exec_history_status(self, single_json_dep_dict, basetime):
-        '''
-        select gen_dt from sched_history where gen_dt not in ('2015-04-22 14:10', '2015-04-22 13:20')
-        '''
-        #single_dep_dtlist_dict = self.get_single_dep_dtlist_dict(single_json_dep_dict, basetime)
-
-        #return {'st': False, 'error_depends_list': [{'sched_id': 1, 'gen_dt': '2015-04-22 13:10'}, {'sched_id': 1, 'gen_dt': '2015-04-22 13:20'} } ]}
-        return {'st': True}
+        return self.mydb.query(sql)
 
     def query_every_scheduling_job_update_status(self):
-        my = MySQL('localhost', 'root', '123456', 'prajna', 3306)
         while True:
             s = time.time()
             ''' query from database every time '''
-            result = my.select('''select * from sched_status where status = 0''')
+            result = mydb.select('''select * from sched_status where status = 0''')
             if not result:
                 time.sleep(60)
                 continue
 
             for single_sched in result:
-                ''' tbd error deal '''
-                deps = json.loads(single_sched['depends'])
-                if len(deps) == 0:
-                    self.update_status(single_sched['id'], self.status['exec'])
-                    continue
-                for dep in deps:
-                    ret = self.get_single_dep_exec_history_status(dep, single_sched['gen_dt'])
-                    if ret['st'] == True:
-                        self.update_status(single_sched['id'], self.status['exec'])
-                        continue
-                    log.info({"id": single_sched['id'], "sched_id": single_sched['sched_id'], "gen_dt": single_sched['gen_dt'], "depends": ret['error_depends_list'])
+                self.depending__test.test_all_depends(sched_status__id)
+
+    def run(self):
+        self.query_every_scheduling_job_update_status()
+
+
+if __name__ == '__main__':
+    mydb__produce_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+    producer = Producer('producerThread', mydb__produce_dbhandler)
+    producer.run()
+
+    mydb__depender_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+    depender = Depender('dependerThread', mydb__depender_dbhandler)
+    depender.run()
