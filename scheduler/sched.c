@@ -140,13 +140,13 @@ int init_db_connections() // init database connections
 int create_tables()
 {
     char *t1 = "CREATE TABLE IF NOT EXISTS `sched_manage` (\
-                `sched_id` int(11) NOT NULL AUTO_INCREMENT COMMENT '任务唯一ID，自增',\
-                `depends` varchar(255) DEFAULT NULL COMMENT '任务依赖关系',\
-                `hostname` varchar(31) NOT NULL DEFAULT 'localhost' COMMENT '主机名',\
-                `user_os` varchar(31) NOT NULL DEFAULT 'root' COMMENT '操作系统用户',\
-                `env` varchar(255) DEFAULT NULL COMMENT '环境变量，默认为空，则使用系统环境变量',\
-                `sched_type` tinyint(4) DEFAULT '0' COMMENT '0: bash, 1: hadoop, 2: spark, 3:other',\
-                `crontab` varchar(127) NOT NULL COMMENT 'crontab 表达式',\
+                `sched_id` int(11) NOT NULL AUTO_INCREMENT COMMENT '任务唯一ID自增',\
+                `depends` varchar(255) DEFAULT NULL COMMENT '任务依赖关系', \
+                `hostname` varchar(31) NOT NULL DEFAULT 'localhost' COMMENT '主机名', \
+                `user_os` varchar(31) NOT NULL DEFAULT 'root' COMMENT '操作系统用户', \
+                `env` varchar(255) DEFAULT NULL COMMENT '环境变量，默认为空，则使用系统环境变量', \
+                `sched_type` tinyint(4) DEFAULT '0' COMMENT '0: bash, 1: hadoop, 2: spark, 3:other', \
+                `crontab` varchar(127) NOT NULL COMMENT 'crontab 表达式', \
                 `priority` tinyint(3) unsigned DEFAULT '0' COMMENT '执行优先级，越小优先级越大',\
                 `cmdline` varchar(255) DEFAULT NULL COMMENT 'bash 任务，命令行',\
                 `appname` varchar(63) DEFAULT NULL COMMENT '程序名称，或者绝对路径',\
@@ -163,7 +163,7 @@ int create_tables()
     if (mysql_query(gconf.con[0], t1)) goto MY_ERROR; // create table sched_manage
 
     char *t2 = "CREATE TABLE IF NOT EXISTS `sched_formal` (\
-                `sched_id` int(11) NOT NULL COMMENT '任务唯一ID，取自表: sched_manage: sched_id',\
+                `sched_id` int(11) NOT NULL AUTO_INCREMENT COMMENT '任务唯一ID 1',\
                 `depends` varchar(255) DEFAULT NULL COMMENT '任务依赖关系',\
                 `hostname` varchar(31) NOT NULL DEFAULT 'localhost' COMMENT '主机名',\
                 `user_os` varchar(31) NOT NULL DEFAULT 'root' COMMENT '操作系统用户',\
@@ -185,7 +185,8 @@ int create_tables()
     if (mysql_query(gconf.con[0], t2)) goto MY_ERROR; // create table sched_manage
 
     char *t3 = "CREATE TABLE IF NOT EXISTS `sched_status` (\
-                `sched_id` int(11) NOT NULL COMMENT '任务唯一ID，取自表: sched_manage: sched_id',\
+                `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '',\
+                `sched_id` int(11) COMMENT '任务唯一ID 2',\
                 `depends` varchar(255) DEFAULT NULL COMMENT '任务依赖关系',\
                 `hostname` varchar(31) NOT NULL DEFAULT 'localhost' COMMENT '主机名',\
                 `user_os` varchar(31) NOT NULL DEFAULT 'root' COMMENT '操作系统用户',\
@@ -201,14 +202,15 @@ int create_tables()
                 `runstatus` tinyint(3) unsigned NOT NULL DEFAULT '0' COMMENT '运行状态，0：未运行，1：运行中 2：超时 3：错误',\
                 `desc` varchar(255) DEFAULT NULL COMMENT '任务描述',\
                 `dt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '修改时间',\
-                PRIMARY KEY (`sched_id`)\
+                PRIMARY KEY (`id`)\
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;\
                 ";
 
     if (mysql_query(gconf.con[0], t3)) goto MY_ERROR; // create table sched_manage
 
     char *t4 = "CREATE TABLE IF NOT EXISTS `sched_history` (\
-                `sched_id` int(11) NOT NULL COMMENT '任务唯一ID，取自表: sched_manage: sched_id',\
+                `id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'id', \
+                `sched_id` int(11) COMMENT '任务唯一ID 3',\
                 `depends` varchar(255) DEFAULT NULL COMMENT '任务依赖关系',\
                 `hostname` varchar(31) NOT NULL DEFAULT 'localhost' COMMENT '主机名',\
                 `user_os` varchar(31) NOT NULL DEFAULT 'root' COMMENT '操作系统用户',\
@@ -223,7 +225,7 @@ int create_tables()
                 `timeout` int(3) unsigned NOT NULL DEFAULT '30' COMMENT '程序执行超时时间，默认为30分钟',\
                 `desc` varchar(255) DEFAULT NULL COMMENT '任务描述',\
                 `dt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '修改时间',\
-                PRIMARY KEY (`sched_id`)\
+                PRIMARY KEY (`id`)\
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;\
                 ";
 
