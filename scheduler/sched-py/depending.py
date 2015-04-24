@@ -85,22 +85,22 @@ class DependingTest(object):
         if ret[0] == False: return ret
         result = ret[1][0]
 
-        depends = json.loads(result['depends'])
+        try:
+            depends = json.loads(result['depends'])
+        except ValueError, e:
+            return False, e
 
         basetime = result['gen_dt']
         sched_status__depends = depends
         if len(sched_status__depends) == 0: 
-            print 'success'
             return True, 'no depends'
         for single_dep_dict in sched_status__depends:
             ret = self.test_single_depends(basetime, single_dep_dict)
             if ret[0] == False and ret[1]:
                 status__list.append(ret[1])
         if len(status__list) == 0:
-            print 'success'
             return True, 'all succeed'
         else: 
-            print json.dumps(status__list)
             return False, status__list 
 
 #my = MySQL('localhost', 'root', '123456', 'prajna', 3306)

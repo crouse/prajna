@@ -48,6 +48,7 @@ class MySQL(object):
         try:
             self._reConn()
             self.cursor = self.conn.cursor(MySQLdb.cursors.DictCursor)
+            self.conn.commit()
             self.cursor.execute(sql)
             result = self.cursor.fetchall()
             self.cursor.close()

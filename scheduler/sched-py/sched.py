@@ -71,9 +71,7 @@ class Producer(threading.Thread):
 
         sched_status__id = ret[1][0]['id']
         sched_status__status = ret[1][0]['status']
-        logger.debug("status_id: %d" % sched_status__id)
         if sched_status__status != 0: 
-            logger.debug('already updated')
             return True, 'already update'
 
         update_sql = """UPDATE `sched_status` SET `status` = '{0}' WHERE `id` = '{1}'
@@ -84,16 +82,18 @@ class Producer(threading.Thread):
     def produce(self):
         while True:
             s = time.time()
-            ret = self.mydb.select('''select * from sched_formal''')
+            #ret = self.mydb.select('''SELECT * FROM `sched_formal` WHERE `mstatus` = 1''')
+            ret = self.mydb.select('''SELECT * FROM `sched_formal`''')
             if not ret[0]: continue
             results = ret[1]
+            if len(results) == 0: 
+                continue
             for x in results: 
                 now = datetime.now().replace(second=0, microsecond=0)
                 iters = croniter(x['crontab'], now - timedelta(minutes=1))
                 iter_next = iters.get_next(datetime)
                 if iter_next == now:
                     self.update__sched_status(x['sched_id'], now)
-                    logger.debug("sched_id: %d, crontab: %s, depends: %s, now: %s" % (x['sched_id'], x['crontab'], x['depends'], str(now)))
             e = time.time()
             stime = (60 - (e - s + 1.0))
             time.sleep(stime)
@@ -105,34 +105,52 @@ class Depender(threading.Thread):
     def __init__(self, threadName, dbhandler):
         threading.Thread.__init__(self, name = threadName)
         self.mydb = dbhandler
-        self.status = {'scheduling': 0, 'exec': 1, 'runing': 2, 'success': 3, 'failed': 4, 'timeout': 5}
         self.depending__test = DependingTest(self.mydb)
 
-    def update_status(self, s_id, status):
-        sql = "update sched_status set status = '{0}' where id = '{1}".format(status, s_id)
+    def update_status(self, sched_status__id, status):
+        sql = "update sched_status set status = '{0}' where id = '{1}'".format(status, sched_status__id)
         return self.mydb.query(sql)
 
     def query_every_scheduling_job_update_status(self):
         while True:
             s = time.time()
-            ''' query from database every time '''
-            result = mydb.select('''select * from sched_status where status = 0''')
-            if not result:
+            sql = '''SELECT `id`, `sched_id`, `crontab`, `status` FROM `sched_status` WHERE `status` = 0'''
+            ret = self.mydb.select(sql)
+            #self.mydb.close()
+
+            if ret[0] == False:
+                os.exit(-1)
+            results = ret[1]
+            logger.info('\n\n')
+            logger.info(json.dumps(results))
+            logger.info('\n\n')
+            logger.info(len(results))
+
+            if len(results) == 0:
+                logger.info('sleep and continue')
                 time.sleep(60)
                 continue
 
-            for single_sched in result:
-                self.depending__test.test_all_depends(sched_status__id)
+            for single_sched in results:
+                sched_status__id = single_sched['id']
+                logger.info(sched_status__id)
+                sched_status__sched_id = single_sched['sched_id']
+                rt = self.depending__test.test_all_depends(sched_status__id)
+                if rt[0] == True:
+                    rt = self.update_status(sched_status__id, status_code['exec'])
+                else: continue
+            e = time.time()
+            time.sleep(60 - (e - s + 1.0))
 
     def run(self):
         self.query_every_scheduling_job_update_status()
 
 
 if __name__ == '__main__':
-    mydb__produce_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
-    producer = Producer('producerThread', mydb__produce_dbhandler)
-    producer.run()
+    mydb__producer_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+    producerThread = Producer('producerThread', mydb__producer_dbhandler)
+    producerThread.start()
 
     mydb__depender_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
-    depender = Depender('dependerThread', mydb__depender_dbhandler)
-    depender.run()
+    dependerThread = Depender('dependerThread', mydb__depender_dbhandler)
+    dependerThread.start()
