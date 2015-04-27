@@ -9,6 +9,7 @@ from datetime import timedelta
 from croniter import croniter
 from mydb import MySQL
 from depending import DependingTest
+from daemon import Daemon
 from comm import status_code
 
 import logging
@@ -21,6 +22,7 @@ stream_handler = logging.StreamHandler(sys.stderr)
 logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
 logger.setLevel(logging.DEBUG)
+
 
 class Producer(threading.Thread):
     def __init__(self, threadName, dbhandler):
@@ -179,12 +181,31 @@ class Depender(threading.Thread):
     def run(self):
         self.query_every_scheduling_job_update_status()
 
+class MyDaemon(Daemon):
+    def run(self):
+        mydb__producer_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+        producerThread = Producer('producerThread', mydb__producer_dbhandler)
+        producerThread.start()
+
+        mydb__depender_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
+        dependerThread = Depender('dependerThread', mydb__depender_dbhandler)
+        dependerThread.start()
+
 
 if __name__ == '__main__':
-    mydb__producer_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
-    producerThread = Producer('producerThread', mydb__producer_dbhandler)
-    producerThread.start()
+    daemon = MyDaemon('/var/run/sched.pid')
+    if len(sys.argv) == 2:
+        if 'start' == sys.argv[1]:
+            daemon.start()
+        elif 'stop' == sys.argv[1]:
+            daemon.stop()
+        elif 'restart' == sys.argv[1]:
+            daemon.restart()
+        else:
+            logger.error('Unknow command')
+            sys.exit(2)
+        sys.exit(0)
+    else:
+        print "Usage: %s start|stop|restart" % sys.argv[0]
+        sys.exit(0)
 
-    mydb__depender_dbhandler = MySQL('localhost', 'root', '123456', 'prajna', 3306)
-    dependerThread = Depender('dependerThread', mydb__depender_dbhandler)
-    dependerThread.start()
