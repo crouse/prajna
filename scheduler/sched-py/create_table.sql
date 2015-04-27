@@ -1,3 +1,7 @@
+CREATE DATABASE IF NOT EXISTS `prajna`;
+
+USE `prajna`;
+
 CREATE TABLE `sched_status` (
   `id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'Id',
   `sched_id` int(11) NOT NULL COMMENT '任务唯一ID 1',
