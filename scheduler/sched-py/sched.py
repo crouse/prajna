@@ -22,13 +22,43 @@ logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
 logger.setLevel(logging.DEBUG)
 
-
 class Producer(threading.Thread):
     def __init__(self, threadName, dbhandler):
         threading.Thread.__init__(self, name = threadName)
         self.mydb = dbhandler
+    def update__sched_paras(self, sched_id, gen_dt):
+        sql = """SELECT `id`, `appparas_temp` 
+                FROM `sched_status` 
+                WHERE `sched_id` = '{0}' 
+                AND `gen_dt` = '{1}'
+        """.format(sched_id, gen_dt)
+        ret = self.mydb.select(sql)
+
+        if ret[0] == False: 
+            logger.error(ret[1])
+            return ret
+
+        if len(ret[1]) == 0: 
+            return True, "{0} with no record".format(' '.join(sql.split(" ")))
+
+        result = ret[1][0]
+        appparas_temp = result['appparas_temp']
+        sched_status__id = result['id']
+        try:
+            appparas = gen_dt.strftime(appparas_temp)
+        except:
+            logger.error('sched_id: {0} appparas_temp error {1}'.format(sched_id, appparas_temp))
+            return False, 'appparas_temp error {0}'.format(appparas_temp)
+
+        up = """UPDATE `sched_status` SET `appparas` = '{0}' WHERE `id` = '{1}'
+        """.format(appparas, sched_status__id)
+        return self.mydb.query(up)
+
     def update__sched_status(self, sched_id, gen_dt):
-        sql = """SELECT `id`, `status` FROM `sched_status` WHERE `sched_id` = '{0}' AND `gen_dt` = '{1}'
+        sql = """SELECT `id`, `status` 
+            FROM `sched_status` 
+            WHERE `sched_id` = '{0}' 
+            AND `gen_dt` = '{1}'
         """.format(sched_id, gen_dt)
         ret = self.mydb.select(sql)
         if not ret[0]: return ret
@@ -45,6 +75,7 @@ class Producer(threading.Thread):
                 `priority`,
                 `cmdline`,
                 `appname`,
+                `appparas_temp`,
                 `appparas`,
                 `dbname`,
                 `timeout`,
@@ -60,6 +91,7 @@ class Producer(threading.Thread):
                 `priority`,
                 `cmdline`,
                 `appname`,
+                `appparas_temp`,
                 `appparas`,
                 `dbname`,
                 `timeout`,
@@ -67,6 +99,7 @@ class Producer(threading.Thread):
                 FROM `sched_formal`
                 WHERE `sched_id` = '{0}' 
             """.format(sched_id)
+            logger.info("insert to sched_status")
             return self.mydb.query(insert_sql)
 
         sched_status__id = ret[1][0]['id']
@@ -82,9 +115,11 @@ class Producer(threading.Thread):
     def produce(self):
         while True:
             s = time.time()
-            #ret = self.mydb.select('''SELECT * FROM `sched_formal` WHERE `mstatus` = 1''')
-            ret = self.mydb.select('''SELECT * FROM `sched_formal`''')
-            if not ret[0]: continue
+            ret = self.mydb.select('''SELECT * FROM `sched_formal` WHERE `mstatus` = 0''')
+            if ret[0] == False:
+                logger.error(ret)
+                time.sleep(30)
+                continue
             results = ret[1]
             if len(results) == 0: 
                 continue
@@ -93,7 +128,11 @@ class Producer(threading.Thread):
                 iters = croniter(x['crontab'], now - timedelta(minutes=1))
                 iter_next = iters.get_next(datetime)
                 if iter_next == now:
-                    self.update__sched_status(x['sched_id'], now)
+                    logger.info('find match time: {0}'.format(now))
+                    rt = self.update__sched_status(x['sched_id'], now)
+                    if rt[0] == False: logger.error(rt)
+                    rt = self.update__sched_paras(x['sched_id'], now)
+                    if rt[0] == False: logger.error(rt)
             e = time.time()
             stime = (60 - (e - s + 1.0))
             time.sleep(stime)
@@ -109,6 +148,7 @@ class Depender(threading.Thread):
 
     def update_status(self, sched_status__id, status):
         sql = "update sched_status set status = '{0}' where id = '{1}'".format(status, sched_status__id)
+        logger.info(sql)
         return self.mydb.query(sql)
 
     def query_every_scheduling_job_update_status(self):
@@ -116,16 +156,11 @@ class Depender(threading.Thread):
             s = time.time()
             sql = '''SELECT `id`, `sched_id`, `crontab`, `status` FROM `sched_status` WHERE `status` = 0'''
             ret = self.mydb.select(sql)
-            #self.mydb.close()
 
             if ret[0] == False:
                 os.exit(-1)
             results = ret[1]
-            logger.info('\n\n')
-            logger.info(json.dumps(results))
-            logger.info('\n\n')
-            logger.info(len(results))
-
+    
             if len(results) == 0:
                 logger.info('sleep and continue')
                 time.sleep(60)
@@ -133,7 +168,6 @@ class Depender(threading.Thread):
 
             for single_sched in results:
                 sched_status__id = single_sched['id']
-                logger.info(sched_status__id)
                 sched_status__sched_id = single_sched['sched_id']
                 rt = self.depending__test.test_all_depends(sched_status__id)
                 if rt[0] == True:
