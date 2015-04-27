@@ -7,7 +7,10 @@
 #include <mysql.h>
 #include <getopt.h>
 #include <sys/wait.h>
-
+#include <syslog.h>
+#include <errno.h>
+#include <sys/types.h>
+     
 #define CON_NUM 3
 #define HOST_LEN 63
 #define COMMON_NAME_LEN 63
@@ -17,10 +20,19 @@
 #define ERROR_CONNECT_MYSQL 2
 #define ERROR_QUERY_MYSQL 3
 
+#define READ_PIPE 0
+#define WRITE_PIPE 1
+#define STDIN 0
+#define STDOUT 1
+
 void help();
 int init_db_connections();
 void hide_arg(int argc, char** argv, const char* arg);
-int do_command(const char *file, char *const argv[], char *const envp[]);
+int child_process(char *file, char *const argv[], char *const envp[]);
+int do_command(char *file, char *argv[], char *envp[]);
+FILE* xpopen(const char *command, char *const argv[], char *const envp[], const char *mode);
+int xpclose(FILE *file);
+
 
 char *appname = NULL;
 typedef struct {
@@ -32,6 +44,14 @@ typedef struct {
 } gconf_t;
 
 gconf_t gconf;
+
+typedef struct pinfo {
+    FILE         *file;
+    pid_t         pid;
+    struct pinfo *next;
+} pinfo;
+
+static pinfo *plist = NULL;
 
 /*[s] get_opt */
 static char* const short_options = "h:u:p:n:";
@@ -82,22 +102,20 @@ int main(int argc, char *argv[])
 
     hide_arg(argc, argv, "--password");
     hide_arg(argc, argv, "-p");
-    //daemon(0, 0);
+    daemon(0, 0);
+
+    openlog("exector", LOG_PID|LOG_CONS, LOG_USER);
+    syslog(LOG_INFO, "exector start");
 
     init_db_connections();
 
     /*[logic code here] */
-    char *args[] = {NULL};
-    char *env[] = {"PATH=/bin:/usr/bin:/usr/local/bin", NULL};
-
-    if(fork() == 0) {
-        do_command("/bin/m.sh", args, env);
-    }
-
     while(TRUE) {
-        sleep(5);
+        sleep(10);
+        do_command("/bin/abc", NULL, NULL);
     }
 
+    closelog();
     return 0;
 }
 
@@ -153,19 +171,163 @@ void hide_arg(int argc, char** argv, const char* arg)
     }
 }
 
-int do_command(const char *file, char *const argv[], char *const envp[])
+int child_process(char *file, char *const argv[], char *const envp[])
 {
-    pid_t pid = fork();
-    if (pid == 0) {
-        printf("child[%lu]\n", getpid());
-        execvpe(file, argv, envp);
-    } else if (pid > 0) {
-        wait(NULL);
-        printf("parent[%lu]\n", getpid());
-        printf("parent return\n");
-    } else {
-        printf("fork error\n");
-        return 1;
+    FILE *fp;
+    char line[1024];
+    char buf[4096];
+    char *p;
+    char tmp[1024];
+    int len = 0;
+    int ret;
+    fp = xpopen("/bin/abc", NULL, NULL, "r");
+    if (fp != NULL) {
+        while(fgets(line, 1024, fp) != NULL) {
+            len += snprintf(buf + len, strlen(line), "%s", line);
+            syslog(LOG_INFO, "%s", line);
+        }
     }
-    return 0;
+
+    syslog(LOG_INFO, "%s", buf);
+    syslog(LOG_INFO, "len: %d", len);
+
+    ret = xpclose(fp);
+    syslog(LOG_INFO, "xclose return: %d", ret);
+}
+
+int do_command(char *file, char *argv[], char *envp[])
+{
+    pid_t pid;
+    syslog(LOG_INFO, "do_command");
+    /* fork to become asynchronous */
+    switch(fork()) {
+        case -1:
+            syslog(LOG_ERR, "pid: [%d] fork error", getpid());
+            break;
+        case 0:
+            /* child process */
+            child_process(file, argv, envp);
+            syslog(LOG_INFO, "[%d] child process done, exiting\n", getpid());
+            _exit(0);
+            break;
+        default:
+            pid = wait(NULL);
+            syslog(LOG_INFO, "do_command [%d]\n", pid);
+            break;
+    }
+}
+
+
+FILE* xpopen(const char *command, char *const argv[], char *const envp[], const char *mode)
+{
+    int fd[2];
+    pinfo *cur, *old;
+
+    if (mode[0] != 'r' && mode[0] != 'w') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    if (mode[1] != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    if (pipe(fd)) {
+        return NULL;
+    }
+
+    cur = (pinfo *) malloc(sizeof(pinfo));
+    if (! cur) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    cur->pid = fork();
+    switch (cur->pid) {
+        
+    case -1:                    /* fork() failed */
+        close(fd[0]);
+        close(fd[1]);
+        free(cur);
+        return NULL;
+        
+    case 0:                     /* child */
+        for (old = plist; old; old = old->next) {
+            close(fileno(old->file));
+        }
+        
+        if (mode[0] == 'r') {
+            dup2(fd[1], STDOUT_FILENO);
+        } else {
+            dup2(fd[0], STDIN_FILENO);
+        }
+        close(fd[0]);   /* close other pipe fds */
+        close(fd[1]);
+        syslog(LOG_INFO, "xpopen pid:%d", getpid());
+        
+        execl("/bin/sh", "sh", "-c", command, (char *) NULL);
+        _exit(1);
+
+    default:                    /* parent */
+        if (mode[0] == 'r') {
+            close(fd[1]);
+            if (!(cur->file = fdopen(fd[0], mode))) {
+                close(fd[0]);
+            }
+        } else {
+            close(fd[0]);
+            if (!(cur->file = fdopen(fd[1], mode))) {
+                close(fd[1]);
+            }
+        }
+        cur->next = plist;
+        plist = cur;
+    }
+
+    return cur->file;
+}
+
+int xpclose(FILE *file)
+{
+    pinfo *last, *cur;
+    int status;
+    pid_t pid;
+
+    /* search for an entry in the list of open pipes */
+
+    for (last = NULL, cur = plist; cur; last = cur, cur = cur->next) {
+        if (cur->file == file) break;
+    }
+    if (! cur) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* remove entry from the list */
+
+    if (last) {
+        last->next = cur->next;
+    } else {
+        plist = cur->next;
+    }
+
+    /* close stream and wait for process termination */
+    
+    fclose(file);
+    do {
+        pid = waitpid(cur->pid, &status, 0);
+    } while (pid == -1 && errno == EINTR);
+
+    syslog(LOG_INFO, "xpclose: [%d]", getpid());
+
+    /* release the entry for the now closed pipe */
+
+    free(cur);
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    errno = ECHILD;
+    return -1;
 }
