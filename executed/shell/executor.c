@@ -10,6 +10,7 @@
 #include <syslog.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <stdint.h>
      
 #define CON_NUM 3
 #define HOST_LEN 63
@@ -25,98 +26,8 @@
 #define STDIN 0
 #define STDOUT 1
 
-void help();
-int init_db_connections();
-void hide_arg(int argc, char** argv, const char* arg);
-
-int child_process(int sched_status__id, char *file, char *const argv[], char *const envp[]);
-int do_command(int sched_status__id, char *file, char *argv[], char *envp[]);
-FILE* xpopen(int sched_status__id, const char *command, char *const argv[], char *const envp[], const char *mode);
-int xpclose(FILE *file);
-
-static void wait_for_child(int sig)
-{
-    int status;  
-    pid_t pid;  
-
-    while( (pid = waitpid(-1,&status,WNOHANG)) > 0)  
-    {  
-        if ( WIFEXITED(status) )  
-        {  
-            syslog(LOG_INFO, "child process revoked. pid[%6d], exit code[%d]\n",pid,WEXITSTATUS(status));  
-        }  
-        else  
-            syslog(LOG_INFO, "child process revoked.but ...\n");  
-    }  
-}
-
-static int get_array_len(char *s) 
-{
-    int len = 0;
-    char *p = s;
-    char *q = NULL;
-
-    while(*p != '\0') {
-        if ((*p == ' '|| *p == '\t') && *p != *q) {
-            len++;
-        }   
-        q = p;
-        p++;
-    }   
-
-    return len + 1;
-}
-
-int find_then__do_commands(MYSQL *con)
-{
-    char *id;
-    char *user_os;
-    char *appname;
-    char *apparas;
-    int len;
-
-    char *sql = "SELECT `id`, `user_os`, `appname`, `apparas`, `env` FROM `sched_status` ORDER BY `priority`";
-
-    if (mysql_query(con, sql)) {
-        goto sql_err;
-    }
-
-    MYSQL_RES *result = mysql_store_result(con);
-    if (result == NULL) {
-        goto sql_err;
-    }
-
-    MYSQL_ROW row;
-    while((row = mysql_fetch_row(result))) {
-        id = row[0];
-        user_os = row[1];
-        appname = row[2];
-        apparas = row[3];
-
-        len = get_array_len(apparas);
-
-        int i = 0;
-        char *paras[len + 1];
-        paras[len+1] = NULL;
-        char *token = strtok(apparas, " ");
-
-        while(token != NULL) {
-            paras[i] = token;
-            token = strtok(NULL, " ");
-            i++;
-        }
-
-       // do_command(id, appname, argv, envp);
-    }
-
-    mysql_free_result(result);
-
-    return 0;
-
-sql_err: 
-    return -1;
-    syslog(LOG_ERR, "MYSQL: [%s]", mysql_error(con));
-}
+#define APP_SCHED 1
+#define APP_EXEC 2
 
 char *appname = NULL;
 typedef struct {
@@ -137,14 +48,70 @@ typedef struct pinfo {
 
 static pinfo *plist = NULL;
 
+void help();
+int init_db_connections();
+void hide_arg(int argc, char** argv, const char* arg);
+int find_then__do_commands();
+
+int child_process(uint64_t sched_status__id, char *user, char *file, char *argv[], char *const envp[]);
+int do_command(uint64_t sched_status__id, char *user, char *file, char *argv[], char *envp[]);
+
+FILE* xpopen(uint64_t sched_status__id, const char *user, const char *command, 
+        char *argv[], char *const envp[], const char *mode);
+
+int xpclose(FILE *file);
+
+int update__sched_status(uint64_t sched_status__id, int status)
+{
+    MYSQL *con;
+    char sql[255];
+    snprintf(sql, 255, "update sched_status set status = '%d' where sched_id = '%lu'", status, sched_status__id); 
+    syslog(LOG_INFO, "sql: %s", sql);
+
+    con = mysql_init(NULL);
+    if (con == NULL) goto sql_err;
+
+    if (mysql_real_connect(con, gconf.hostname, gconf.username, gconf.password, gconf.dbname, 0, NULL, 0) == NULL)
+        goto sql_err;
+
+    if (mysql_query(con, "set character set utf8")) goto sql_err;
+
+    if (mysql_query(con, sql)) 
+        goto sql_err;
+    else {
+        printf("Hello world\n");
+        mysql_close(con);
+        return 0;
+    }
+
+sql_err:
+    syslog(LOG_ERR, "%s", mysql_error(con));
+    mysql_close(con);
+    return -1;
+}
+
+static void wait_for_child(int sig)
+{
+    int status;  
+    pid_t pid;  
+
+    while((pid = waitpid(-1, &status, WNOHANG)) > 0){  
+        if (WIFEXITED(status)) {  
+            syslog(LOG_INFO, "EXIST PID: [%d] EXIST STATUS: [%d]", pid, WEXITSTATUS(status));  
+        } else  
+            syslog(LOG_INFO, "EXIST PID: %d", pid);
+    }  
+}
+
 /*[s] get_opt */
-static char* const short_options = "h:u:p:n:";
+static char* const short_options = "h:u:p:n:f";
 
 struct option long_options[] = {
     {"hostname", 1, NULL, 'h'},
     {"username", 1, NULL, 'u'},
     {"password", 1, NULL, 'p'},
     {"dbname", 1, NULL, 'n'},
+    {"foreground", 0, NULL, 'f'},
     {0, 0, 0, 0},
 };
 /*[e] get opt */
@@ -158,10 +125,9 @@ int main(int argc, char *argv[])
     /*[e] set default database name */
 
     appname = argv[0];
-    if (argc < 7) { help(); }
+    //if (argc < 7) { help(); }
 
-    int c;
-    int initdb = FALSE; // 1: init database if is not created
+    int c, is_daemon = 1;
     while((c = getopt_long(argc, argv, short_options, long_options, NULL)) != -1)
     {
         switch (c) {
@@ -178,6 +144,9 @@ int main(int argc, char *argv[])
                 memset(gconf.dbname, '\0', COMMON_NAME_LEN);
                 memcpy(gconf.dbname, optarg, strlen(optarg));
                 break;
+            case 'f':
+                is_daemon = 0;
+                break;
             default:
                 help();
                 break;
@@ -187,7 +156,9 @@ int main(int argc, char *argv[])
     hide_arg(argc, argv, "--password");
     hide_arg(argc, argv, "-p");
 
-    daemon(0, 0);
+    if (is_daemon) {
+        daemon(0, 0);
+    }
 
     struct sigaction sa;
     sa.sa_handler = wait_for_child;
@@ -205,15 +176,9 @@ int main(int argc, char *argv[])
     init_db_connections();
 
     /*[logic code here] */
-    int m = 2;
-    int sched_status__id = 0;
     while(1) {
-        sleep(10);
-        if (m > 0) {
-            do_command(sched_status__id, "/bin/abc", NULL, NULL);
-            syslog(LOG_INFO, "[%lu] AFTER DO COMMAND !!!", time(NULL));
-        }
-        m--;
+        find_then__do_commands();
+        sleep(5);
     }
 
     closelog();
@@ -272,23 +237,20 @@ void hide_arg(int argc, char** argv, const char* arg)
     }
 }
 
-int child_process(int sched_status__id, char *file, char *const argv[], char *const envp[])
+int child_process(uint64_t sched_status__id, char *user, char *file, char *argv[], char *const envp[])
 {
 #define LINE_LEN 1024
 #define BUF_LEN 4096
     FILE *fp;
     int len = 0;
     int line_len;
-    int ret;
 
-    char *p;
     char line[LINE_LEN];
     char buf[BUF_LEN];
-    char tmp[LINE_LEN];
 
     memset(buf, '\0', BUF_LEN);
 
-    fp = xpopen(sched_status__id, "/bin/abc", NULL, NULL, "r");
+    fp = xpopen(sched_status__id, user, file, argv, envp, "r");
 
     if (fp != NULL) {
         while(fgets(line, LINE_LEN, fp) != NULL) {
@@ -301,19 +263,18 @@ int child_process(int sched_status__id, char *file, char *const argv[], char *co
         syslog(LOG_INFO, "<%s>", buf);
     }
 
-    xpclose(fp);
+    return xpclose(fp);
 }
 
-int do_command(int sched_status__id, char *file, char *argv[], char *envp[])
+int do_command(uint64_t sched_status__id, char *user, char *file, char *argv[], char *envp[])
 {
-    pid_t pid;
     /* fork to become asynchronous */
     switch(fork()) {
         case -1:
             break;
         case 0:
             /* child process */
-            child_process(sched_status__id, file, argv, envp);
+            child_process(sched_status__id, user, file, argv, envp);
             _exit(0);
             break;
         default:
@@ -324,7 +285,8 @@ int do_command(int sched_status__id, char *file, char *argv[], char *envp[])
 }
 
 
-FILE* xpopen(int sched_status__id, const char *command, char *const argv[], char *const envp[], const char *mode)
+FILE* xpopen(uint64_t sched_status__id, const char *user, const char *command, char *argv[], 
+        char *const envp[], const char *mode)
 {
     int fd[2];
     pinfo *cur, *old;
@@ -372,9 +334,10 @@ FILE* xpopen(int sched_status__id, const char *command, char *const argv[], char
         close(fd[1]);
 
         syslog(LOG_INFO, "execl [%d]", getpid());
-        // sched_status__id pid status
-        
-        execl("/bin/sh", "sh", "-c", command, (char *) NULL);
+        syslog(LOG_INFO, "command: [%s]", command);
+        update__sched_status(sched_status__id, APP_EXEC);
+        syslog(LOG_INFO, "Here we are\n");
+        execvpe(command, argv, NULL);
         _exit(1);
 
     default:                    /* parent */
@@ -399,20 +362,16 @@ FILE* xpopen(int sched_status__id, const char *command, char *const argv[], char
 int xpclose(FILE *file)
 {
     pinfo *last, *cur;
-    int status;
-    pid_t pid;
-
-    /* search for an entry in the list of open pipes */
 
     for (last = NULL, cur = plist; cur; last = cur, cur = cur->next) {
-        if (cur->file == file) break;
+        if (cur->file == file) 
+            break;
     }
+
     if (! cur) {
         errno = EINVAL;
         return -1;
     }
-
-    /* remove entry from the list */
 
     if (last) {
         last->next = cur->next;
@@ -420,25 +379,63 @@ int xpclose(FILE *file)
         plist = cur->next;
     }
 
-    /* close stream and wait for process termination */
-    
-    fclose(file);
-
-    /*
-    do {
-        pid = waitpid(cur->pid, &status, 0);
-    } while (pid == -1 && errno == EINTR);
-    syslog(LOG_INFO, "in xclose: [%d]", pid);
-    */
-
-
-    /* release the entry for the now closed pipe */
-
     free(cur);
+    return fclose(file);
+}
 
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
+int find_then__do_commands()
+{
+    char *id;
+    char *user_os;
+    char *appname;
+    char *apparas;
+    char *env;
+    char *token;
+    int len;
+    int i;
+    char **argv;
+    char *sql = "SELECT id, user_os, appname, appparas, env FROM sched_status where status = 1 ORDER BY priority";
+
+    syslog(LOG_INFO, "find_then__do_commands");
+
+    if (mysql_query(gconf.con[0], sql)) {
+        goto sql_err;
     }
-    errno = ECHILD;
+
+    MYSQL_RES *result = mysql_store_result(gconf.con[0]);
+    if (result == NULL) {
+        goto sql_err;
+    }
+
+    MYSQL_ROW row;
+
+    while((row = mysql_fetch_row(result))) {
+        id = row[0];
+        user_os = row[1];
+        appname = row[2];
+        apparas = row[3];
+        env = row[4];
+
+        printf("[%s]\n", appname);
+        char *a[10];
+
+        a[0] = appname;
+        i = 1;
+        a[i] = strtok(apparas, " ");
+
+        while(a[i] && i < 10) {
+            a[++i] = strtok(NULL, " ");
+        }
+        a[++i] = NULL;
+
+        do_command(atoi(id), user_os, appname, a, NULL);
+    }
+
+    mysql_free_result(result);
+
+    return 0;
+
+sql_err: 
+    syslog(LOG_ERR, "MYSQL: [%s]", mysql_error(gconf.con[1]));
     return -1;
 }
