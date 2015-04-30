@@ -65,7 +65,7 @@ int update__sched_status(uint64_t sched_status__id, int status)
 {
     MYSQL *con;
     char sql[255];
-    snprintf(sql, 255, "update sched_status set status = '%d' where sched_id = '%lu'", status, sched_status__id); 
+    snprintf(sql, 255, "update sched_status set status = '%d' where id = '%lu'", status, sched_status__id); 
     syslog(LOG_INFO, "sql: %s", sql);
 
     con = mysql_init(NULL);
