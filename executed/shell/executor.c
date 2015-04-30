@@ -11,8 +11,18 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <stdint.h>
-     
-#define CON_NUM 3
+
+/******************************************/
+#define LEN_SQL 254
+#define CNT_DB_CON 3
+#define DB_CON_QUERY 0
+#define DB_CON_UPDATE 1
+#define DB_CON_UPDATE2 2
+/******************************************/
+#define SQL_OK 0
+#define SQL_QUERY_ERROR 1
+/******************************************/
+
 #define HOST_LEN 63
 #define COMMON_NAME_LEN 63
 #define PASS_LEN 31
@@ -28,10 +38,12 @@
 
 #define APP_SCHED 1
 #define APP_EXEC 2
+#define APP_SUCCESS 3
+#define APP_FAILED 4
 
 char *appname = NULL;
 typedef struct {
-    MYSQL *con[CON_NUM];
+    MYSQL *con[CNT_DB_CON];
     char hostname[HOST_LEN];
     char username[COMMON_NAME_LEN];
     char password[COMMON_NAME_LEN];
@@ -49,7 +61,7 @@ typedef struct pinfo {
 static pinfo *plist = NULL;
 
 void help();
-int init_db_connections();
+int init_db_cons();
 void hide_arg(int argc, char** argv, const char* arg);
 int find_then__do_commands();
 
@@ -60,48 +72,9 @@ FILE* xpopen(uint64_t sched_status__id, const char *user, const char *command,
         char *argv[], char *const envp[], const char *mode);
 
 int xpclose(FILE *file);
-
-int update__sched_status(uint64_t sched_status__id, int status)
-{
-    MYSQL *con;
-    char sql[255];
-    snprintf(sql, 255, "update sched_status set status = '%d' where id = '%lu'", status, sched_status__id); 
-    syslog(LOG_INFO, "sql: %s", sql);
-
-    con = mysql_init(NULL);
-    if (con == NULL) goto sql_err;
-
-    if (mysql_real_connect(con, gconf.hostname, gconf.username, gconf.password, gconf.dbname, 0, NULL, 0) == NULL)
-        goto sql_err;
-
-    if (mysql_query(con, "set character set utf8")) goto sql_err;
-
-    if (mysql_query(con, sql)) 
-        goto sql_err;
-    else {
-        printf("Hello world\n");
-        mysql_close(con);
-        return 0;
-    }
-
-sql_err:
-    syslog(LOG_ERR, "%s", mysql_error(con));
-    mysql_close(con);
-    return -1;
-}
-
-static void wait_for_child(int sig)
-{
-    int status;  
-    pid_t pid;  
-
-    while((pid = waitpid(-1, &status, WNOHANG)) > 0){  
-        if (WIFEXITED(status)) {  
-            syslog(LOG_INFO, "EXIST PID: [%d] EXIST STATUS: [%d]", pid, WEXITSTATUS(status));  
-        } else  
-            syslog(LOG_INFO, "EXIST PID: %d", pid);
-    }  
-}
+int update__sched_status(uint64_t sched_status__id, int status, pid_t pid);
+int update__sched_status_after_wait(int status, pid_t pid);
+static void wait_for_child(int sig);
 
 /*[s] get_opt */
 static char* const short_options = "h:u:p:n:f";
@@ -173,7 +146,7 @@ int main(int argc, char *argv[])
     openlog("exector", LOG_PID|LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "exector start");
 
-    init_db_connections();
+    init_db_cons();
 
     /*[logic code here] */
     while(1) {
@@ -194,10 +167,10 @@ void help()
     exit(-1);
 }
 
-int init_db_connections() // init database connections
+int init_db_cons() // init database connections
 {
    int i;
-   for(i = 0; i < CON_NUM; i++) {
+   for(i = 0; i < CNT_DB_CON; i++) {
        gconf.con[i] = mysql_init(NULL);
        if (gconf.con[i] == NULL) {
            fprintf(stderr, "%s\n", mysql_error(gconf.con[i]));
@@ -335,7 +308,7 @@ FILE* xpopen(uint64_t sched_status__id, const char *user, const char *command, c
 
         syslog(LOG_INFO, "execl [%d]", getpid());
         syslog(LOG_INFO, "command: [%s]", command);
-        update__sched_status(sched_status__id, APP_EXEC);
+        update__sched_status(sched_status__id, APP_EXEC, getpid());
         syslog(LOG_INFO, "Here we are\n");
         execvpe(command, argv, NULL);
         _exit(1);
@@ -362,6 +335,9 @@ FILE* xpopen(uint64_t sched_status__id, const char *user, const char *command, c
 int xpclose(FILE *file)
 {
     pinfo *last, *cur;
+    pid_t pid;
+    int status;
+    int ret = 0;
 
     for (last = NULL, cur = plist; cur; last = cur, cur = cur->next) {
         if (cur->file == file) 
@@ -379,8 +355,27 @@ int xpclose(FILE *file)
         plist = cur->next;
     }
 
+    fclose(file);
+
+    do {
+        pid = waitpid(cur->pid, &status, 0);
+    } while (pid == -1 &errno == EINTR);
+
     free(cur);
-    return fclose(file);
+
+    if (WIFEXITED(status)) {
+        ret = WEXITSTATUS(status);
+        update__sched_status_after_wait(ret, pid);
+        syslog(LOG_INFO, "xpclose PID: [%d], status: [%d]", pid, ret);
+        return ret;
+    } else {
+        ret = -1;
+        update__sched_status_after_wait(ret, pid);
+        syslog(LOG_INFO, "xpclose PID: [%d], status: [%d]", pid, ret);
+        return ret;
+    }
+
+    return ret;
 }
 
 int find_then__do_commands()
@@ -402,7 +397,7 @@ int find_then__do_commands()
         goto sql_err;
     }
 
-    MYSQL_RES *result = mysql_store_result(gconf.con[0]);
+    MYSQL_RES *result = mysql_store_result(gconf.con[DB_CON_QUERY]);
     if (result == NULL) {
         goto sql_err;
     }
@@ -438,4 +433,63 @@ int find_then__do_commands()
 sql_err: 
     syslog(LOG_ERR, "MYSQL: [%s]", mysql_error(gconf.con[1]));
     return -1;
+}
+
+/* [UPDATE TABLE SCHED_STATUS]
+ *  call when exec and finished the task
+ */
+int update__sched_status(uint64_t sched_status__id, int status, pid_t pid)
+{
+    char sql[LEN_SQL];
+    snprintf(sql, LEN_SQL, "UPDATE `sched_status` SET `status` = '%d', \
+            `pid` = '%d' WHERE `id` = '%lu'", status, pid, sched_status__id); 
+
+    syslog(LOG_INFO, "SQL[%s]", sql);
+
+    if (mysql_query(gconf.con[DB_CON_UPDATE], sql)) 
+    {
+        syslog(LOG_ERR, "QUERY ERROR");
+        return SQL_QUERY_ERROR;
+    }
+
+    return SQL_OK;
+}
+
+int update__sched_status_after_wait(int status, pid_t pid)
+{
+    int st;
+    char sql[LEN_SQL];
+    if (status == 0) st = APP_SUCCESS;
+    else st = APP_FAILED;
+
+    snprintf(sql, LEN_SQL, "UPDATE `sched_status` SET `status` = '%d' WHERE `pid` = '%lu'", st, pid); 
+
+    syslog(LOG_INFO, "SQL[%s]", sql);
+
+    if (mysql_query(gconf.con[DB_CON_UPDATE], sql)) 
+    {
+        syslog(LOG_ERR, "QUERY ERROR");
+        return SQL_QUERY_ERROR;
+    }
+
+    return SQL_OK;
+}
+
+static void wait_for_child(int sig)
+{
+    int status;  
+    pid_t pid;  
+
+    while((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    {  
+        if (WIFEXITED(status)) 
+        {  
+            syslog(LOG_INFO, "EXIST PID: [%d] EXIST STATUS: [%d]", 
+                    pid, WEXITSTATUS(status));  
+            //update__sched_status_after_wait(status, pid);
+        } else {
+            syslog(LOG_INFO, "EXIST PID: %d", pid);
+            //update__sched_status_after_wait(-1, pid);
+        }
+    }  
 }
